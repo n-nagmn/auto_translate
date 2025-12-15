@@ -122,7 +122,6 @@ def main():
     chunk_pages = args.chunk_size
     download_dir = os.path.abspath(args.output_dir)
 
-
     if not os.path.exists(download_dir):
         os.makedirs(download_dir)
     
