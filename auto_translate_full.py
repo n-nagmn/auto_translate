@@ -133,7 +133,6 @@ def main():
     
     try:
         print(f"保存先: {download_dir}")
-        input(" Enter キーを押して開始...")
         
         for f in split_files:
             try:
