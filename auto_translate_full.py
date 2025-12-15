@@ -2,27 +2,26 @@ import os
 import time
 import glob
 import random
+import sys
+import argparse
 from pypdf import PdfReader, PdfWriter
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import undetected_chromedriver as uc
 
-# ================= 設定エリア =================
-INPUT_PDF = "input.pdf"
-CHUNK_PAGES = 1
-DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
-# ============================================
-
 def split_pdf(file_path, chunk_size):
-    """PDFを分割する"""
+    if not os.path.exists(file_path):
+        print(f"エラー: ファイル '{file_path}' が見つかりません。")
+        sys.exit(1)
+
     reader = PdfReader(file_path)
     parts = []
     temp_dir = "temp_split"
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
 
-    print(f"[{file_path}] 全{len(reader.pages)}ページを分割します...")
+    print(f"[{file_path}] 全{len(reader.pages)}ページを分割します (1ファイル{chunk_size}ページ)...")
     for i in range(0, len(reader.pages), chunk_size):
         writer = PdfWriter()
         end_page = min(i + chunk_size, len(reader.pages))
@@ -84,7 +83,6 @@ def translate_on_web(driver, file_path):
     time.sleep(10) 
 
 def merge_pdfs(input_dir, output_filename):
-    """結合処理"""
     writer = PdfWriter()
     files = sorted(glob.glob(os.path.join(input_dir, "*.pdf")))
     if not files:
@@ -105,22 +103,41 @@ def merge_pdfs(input_dir, output_filename):
     print(f"完了！: {output_filename}")
 
 def main():
-    if not os.path.exists(DOWNLOAD_DIR):
-        os.makedirs(DOWNLOAD_DIR)
+    parser = argparse.ArgumentParser(description='Google翻訳自動化スクリプト')
+    
+    # 必須引数: 入力ファイル
+    parser.add_argument('input_file', help='翻訳するPDFファイルのパス')
+    
+    # オプション引数: 分割ページ数 (デフォルト: 1)
+    parser.add_argument('--chunk-size', '-c', type=int, default=1, 
+                        help='1回に翻訳するページ数 (デフォルト: 1)')
+    
+    # オプション引数: 保存先フォルダ (デフォルト: ./downloads)
+    parser.add_argument('--output-dir', '-o', type=str, default=os.path.join(os.getcwd(), "downloads"),
+                        help='ダウンロード先のフォルダパス (デフォルト: ./downloads)')
+    
+    args = parser.parse_args()
+    
+    input_pdf = args.input_file
+    chunk_pages = args.chunk_size
+    download_dir = os.path.abspath(args.output_dir)
+
+
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
     
     # 分割実行
-    split_files = split_pdf(INPUT_PDF, CHUNK_PAGES)
+    split_files = split_pdf(input_pdf, chunk_pages)
     
-    driver = init_driver(DOWNLOAD_DIR)
+    driver = init_driver(download_dir)
     
     try:
+        print(f"保存先: {download_dir}")
         input(" Enter キーを押して開始...")
         
         for f in split_files:
             try:
                 translate_on_web(driver, f)
-                wait_time = random.uniform(0, 1)
-                time.sleep(wait_time)
             except Exception as e:
                 print(f"  エラー発生 ({os.path.basename(f)}): {e}")
                 continue
@@ -132,7 +149,7 @@ def main():
             shutil.rmtree("temp_split")
 
     # 結合実行
-    merge_pdfs(DOWNLOAD_DIR, "final_translated.pdf")
+    merge_pdfs(download_dir, "final_translated.pdf")
 
 if __name__ == "__main__":
     main()
