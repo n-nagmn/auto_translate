@@ -45,6 +45,14 @@ python auto_translate_full.py input.pdf -c 3 -o "C:\MyDocs"
 | `-c`, `--chunk-size` | 1回に翻訳するページ数 | `1` |
 | `-o`, `--output-dir` | 翻訳済みファイルの保存先フォルダ | `./downloads` |
 
+### 3\. Windows環境での実行
+
+リリースページからexeをダウンロードします。
+
+```bash
+auto_translate_full.exe input.pdf -c 3 -o "C:\MyDocs"
+```
+
 ## License
 
 MIT License
