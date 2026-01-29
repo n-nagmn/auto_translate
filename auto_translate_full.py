@@ -13,6 +13,7 @@ from pypdf import PdfReader, PdfWriter
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from multiprocessing import freeze_support
 import undetected_chromedriver as uc
 
 # Chromeバージョン自動取得ロジック
@@ -253,4 +254,5 @@ def main():
                 pass
 
 if __name__ == "__main__":
+    freeze_support()
     main()
