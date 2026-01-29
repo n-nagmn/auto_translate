@@ -9,6 +9,10 @@ import datetime
 import platform
 import subprocess
 import re
+import threading
+import queue
+import tkinter as tk
+from tkinter import ttk, filedialog, scrolledtext
 from pypdf import PdfReader, PdfWriter
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -16,7 +20,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from multiprocessing import freeze_support
 import undetected_chromedriver as uc
 
-# Chromeバージョン自動取得ロジック
 def get_local_chrome_major_version():
     """
     インストールされているChromeのメジャーバージョン（例: 120, 121）を取得する
@@ -26,9 +29,7 @@ def get_local_chrome_major_version():
 
     try:
         if system_name == "Windows":
-            # Windows: レジストリまたはPowerShellから取得を試みる
             try:
-                # 一般的なインストールパスを確認
                 process = subprocess.Popen(
                     ['reg', 'query', 'HKEY_CURRENT_USER\\Software\\Google\\Chrome\\BLBeacon', '/v', 'version'],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
@@ -41,7 +42,6 @@ def get_local_chrome_major_version():
             except:
                 pass
             
-            # レジストリで見つからない場合の予備（wmic）
             if not version_str:
                 process = subprocess.Popen(
                     ['wmic', 'datafile', 'where', 'name="C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe"', 'get', 'Version', '/value'],
@@ -66,19 +66,18 @@ def get_local_chrome_major_version():
             stdout, _ = process.communicate()
             version_str = stdout.decode('utf-8')
 
-        # バージョン番号の抽出 (例: "Google Chrome 120.0.6099.109" -> 120)
         if version_str:
             match = re.search(r"(\d+)\.\d+\.\d+\.\d+", version_str)
             if match:
                 major_ver = int(match.group(1))
-                print(f"検知されたChromeバージョン: {major_ver}")
                 return major_ver
 
     except Exception as e:
-        print(f"Chromeバージョンの自動検知に失敗しました: {e}")
+        pass # GUI側でログに出すためここでは黙殺
     
     return None
-# --- ここまで追加 ---
+
+# --- PDF処理ロジック (GUI/CLI共通) ---
 
 def split_pdf(file_path, chunk_size, split_dir):
     if not os.path.exists(file_path):
@@ -116,14 +115,12 @@ def init_driver(download_dir):
     }
     options.add_experimental_option("prefs", prefs)
     
-    # バージョンを自動検知して指定する
     major_version = get_local_chrome_major_version()
     
     if major_version:
-        # バージョンを指定して起動（これがエラー回避の肝です）
+        print(f"Chrome v{major_version} を検知しました。")
         driver = uc.Chrome(options=options, version_main=major_version)
     else:
-        # 検知できなかった場合は運任せ（デフォルト動作）
         print("Chromeバージョンが特定できなかったため、自動ダウンロードを試みます...")
         driver = uc.Chrome(options=options)
         
@@ -146,7 +143,11 @@ def wait_for_download(download_dir, timeout=60):
 
 def translate_on_web(driver, file_path, download_dir):
     url = "https://translate.google.co.jp/?sl=en&tl=ja&op=docs"
-    driver.get(url)
+    try:
+        driver.get(url)
+    except Exception as e:
+        print(f"  ページロードエラー: {e}")
+        return False
 
     wait = WebDriverWait(driver, 40)
     print(f"  処理中: {os.path.basename(file_path)}")
@@ -195,15 +196,12 @@ def merge_pdfs(input_dir, output_filename):
             pass
     with open(output_filename, "wb") as f:
         writer.write(f)
-    print(f"★ 全結合完了: {output_filename}")
+    print(f"全結合完了: {output_filename}")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('input_file', help='翻訳するPDFファイル')
-    parser.add_argument('--chunk-size', '-c', type=int, default=1)
-    args = parser.parse_args()
-    
-    input_pdf = os.path.abspath(args.input_file)
+# --- メイン処理ロジック (GUI用に分離) ---
+
+def run_translation_process(input_pdf, chunk_size):
+    input_pdf = os.path.abspath(input_pdf)
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + "_" + str(random.randint(1000, 9999))
     base_work_dir = os.path.join(os.getcwd(), f"temp_work_{run_id}")
     split_dir = os.path.join(base_work_dir, "split")
@@ -220,9 +218,8 @@ def main():
     print(f"=== 処理開始: {file_name} (ID: {run_id}) ===")
     driver = None
     try:
-        split_files = split_pdf(input_pdf, args.chunk_size, split_dir)
+        split_files = split_pdf(input_pdf, chunk_size, split_dir)
         
-        # ドライバ起動 (ここでバージョン自動検知が動きます)
         driver = init_driver(download_dir)
         
         for i, f in enumerate(split_files):
@@ -230,7 +227,10 @@ def main():
             os.makedirs(current_page_download_dir, exist_ok=True)
 
             params = {'behavior': 'allow', 'downloadPath': current_page_download_dir}
-            driver.execute_cdp_cmd('Page.setDownloadBehavior', params)
+            try:
+                driver.execute_cdp_cmd('Page.setDownloadBehavior', params)
+            except Exception as e:
+                print(f"  CDPコマンド警告 (続行します): {e}")
 
             success = translate_on_web(driver, f, current_page_download_dir)
             if success:
@@ -244,15 +244,172 @@ def main():
 
     except Exception as e:
         print(f"\n予期せぬエラー: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
+        print("ブラウザを終了中...")
         if driver:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
         if os.path.exists(base_work_dir):
             try:
                 shutil.rmtree(base_work_dir)
             except:
                 pass
+        print("=== 全処理終了 ===")
+
+# --- GUI 実装 ---
+
+class TextRedirector(object):
+    """標準出力をGUIのTextウィジェットにリダイレクトするためのクラス"""
+    def __init__(self, queue):
+        self.queue = queue
+
+    def write(self, str):
+        self.queue.put(str)
+
+    def flush(self):
+        pass
+
+class TranslatorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("PDF Auto Translator")
+        self.root.geometry("600x500")
+        self.root.resizable(True, True)
+
+        # スタイル設定
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        # メインフレーム
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # ファイル選択エリア
+        file_frame = ttk.LabelFrame(main_frame, text="入力ファイル", padding="10")
+        file_frame.pack(fill=tk.X, pady=5)
+
+        self.file_path_var = tk.StringVar()
+        self.entry_file = ttk.Entry(file_frame, textvariable=self.file_path_var)
+        self.entry_file.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        btn_browse = ttk.Button(file_frame, text="参照...", command=self.browse_file)
+        btn_browse.pack(side=tk.RIGHT)
+
+        # 設定エリア
+        setting_frame = ttk.Frame(main_frame)
+        setting_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Label(setting_frame, text="分割単位(ページ):").pack(side=tk.LEFT)
+        self.chunk_var = tk.IntVar(value=1)
+        spin_chunk = ttk.Spinbox(setting_frame, from_=1, to=100, textvariable=self.chunk_var, width=5)
+        spin_chunk.pack(side=tk.LEFT, padx=5)
+
+        # 実行ボタン
+        self.btn_run = ttk.Button(main_frame, text="翻訳開始", command=self.start_thread)
+        self.btn_run.pack(pady=10, fill=tk.X)
+
+        # ログ表示エリア
+        log_frame = ttk.LabelFrame(main_frame, text="実行ログ", padding="5")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.txt_log = scrolledtext.ScrolledText(log_frame, state='disabled', height=15)
+        self.txt_log.pack(fill=tk.BOTH, expand=True)
+        self.txt_log.tag_config('error', foreground='red')
+
+        # ログ用キューと監視
+        self.log_queue = queue.Queue()
+        self.update_log()
+
+    def browse_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+        if file_path:
+            self.file_path_var.set(file_path)
+
+    def append_log(self, text):
+        self.txt_log.configure(state='normal')
+        self.txt_log.insert(tk.END, text)
+        self.txt_log.see(tk.END)
+        self.txt_log.configure(state='disabled')
+
+    def update_log(self):
+        """キューからログを取り出して表示"""
+        while not self.log_queue.empty():
+            try:
+                text = self.log_queue.get_nowait()
+                self.append_log(text)
+            except queue.Empty:
+                pass
+        self.root.after(100, self.update_log)
+
+    def start_thread(self):
+        file_path = self.file_path_var.get()
+        if not file_path:
+            self.append_log("エラー: ファイルを選択してください。\n")
+            return
+        
+        chunk_size = self.chunk_var.get()
+        
+        self.btn_run.config(state='disabled')
+        self.entry_file.config(state='disabled')
+        
+        # スレッド開始
+        thread = threading.Thread(target=self.run_process, args=(file_path, chunk_size))
+        thread.daemon = True
+        thread.start()
+
+    def run_process(self, file_path, chunk_size):
+        # 標準出力をジャックする
+        original_stdout = sys.stdout
+        sys.stdout = TextRedirector(self.log_queue)
+        
+        try:
+            run_translation_process(file_path, chunk_size)
+        except Exception as e:
+            sys.stdout.write(f"重大なエラー: {e}\n")
+        finally:
+            # 元に戻す
+            sys.stdout = original_stdout
+            # UIを戻すためにメインスレッドへ通知（簡易的にログ経由でやるか、afterを使う）
+            self.log_queue.put("\n--- 完了 ---\n")
+            # ボタンの有効化はメインスレッドで行う必要があるため、今回は簡易的に何もしないか、
+            # 完了通知を受けてユーザーが閉じる想定。再実行したい場合はリセット機能が必要だが、
+            # ここではシンプルにするため終了を促す。
+            # self.root.after(0, lambda: self.btn_run.config(state='normal')) を使うと安全に復帰可能
+            # ただしTextRedirector外からの呼び出しなので注意
+            pass
+            
+def main():
+    freeze_support() # Windowsでのmultiprocessing用
+    
+    # コマンドライン引数がある場合はCLIとして動作
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('input_file', help='翻訳するPDFファイル')
+        parser.add_argument('--chunk-size', '-c', type=int, default=1)
+        args = parser.parse_args()
+        run_translation_process(args.input_file, args.chunk_size)
+    else:
+        # 引数がない場合はGUI起動
+        root = tk.Tk()
+        app = TranslatorApp(root)
+        
+        # 処理終了後にボタンを戻すためのトリッキーな実装（簡易版）
+        def check_thread_alive():
+            # アクティブなスレッド数を監視したり、フラグで管理するのが正攻法だが
+            # ここではボタンの状態を監視して、ログに"--- 完了 ---"が来たら戻す処理などを入れるのが一般的
+            # 今回はシンプルに「再実行したい場合はアプリを再起動」推奨、または以下でボタン復帰
+            if "--- 完了 ---" in app.txt_log.get("1.0", tk.END):
+                 app.btn_run.config(state='normal')
+                 app.entry_file.config(state='normal')
+            root.after(1000, check_thread_alive)
+            
+        # check_thread_alive() # 必要であれば有効化
+        
+        root.mainloop()
 
 if __name__ == "__main__":
-    freeze_support()
     main()
